@@ -5,18 +5,13 @@ const rateLimit = require('express-rate-limit');
 const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const multer = require('multer');
-const path = require('path');
-require('dotenv').config();
 
 const app = express();
 
 // Middleware
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }
-}));
+app.use(helmet());
 app.use(cors({
-  origin: ['http://localhost:3000', 'exp://localhost:19000'],
+  origin: ['http://localhost:3000', 'exp://localhost:19000', 'https://your-app.netlify.app'],
   credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -27,65 +22,21 @@ const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100
 });
-app.use('/api/', limiter);
+app.use(limiter);
 
 // Supabase client
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-  console.error('Supabase credentials are missing!');
-  process.exit(1);
+  console.error('❌ Supabase credentials are missing!');
+  console.log('Please set SUPABASE_URL and SUPABASE_ANON_KEY environment variables');
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // JWT secret
-const JWT_SECRET = process.env.JWT_SECRET || 'eco-map-secret-key-change-in-production';
-
-// Auth middleware
-const authenticateToken = async (req, res, next) => {
-  try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-      return res.status(401).json({ error: 'Требуется авторизация' });
-    }
-
-    const decoded = jwt.verify(token, JWT_SECRET);
-    
-    // Проверяем существование пользователя
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, email, role, status')
-      .eq('id', decoded.userId)
-      .single();
-
-    if (error || !user) {
-      return res.status(403).json({ error: 'Пользователь не найден' });
-    }
-
-    req.user = user;
-    next();
-  } catch (error) {
-    return res.status(403).json({ error: 'Неверный токен' });
-  }
-};
-
-// File upload setup
-const storage = multer.memoryStorage();
-const upload = multer({
-  storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Разрешены только изображения'), false);
-    }
-  }
-});
+const JWT_SECRET = process.env.JWT_SECRET || 'eco-map-secret-key-northflank';
 
 // Utility functions
 const formatUserResponse = (user) => ({
@@ -121,9 +72,7 @@ const formatReportResponse = (report) => ({
     minute: '2-digit' 
   }),
   userId: report.user_id,
-  userName: report.users?.name || 'Пользователь',
-  likesCount: report.likes_count || 0,
-  commentsCount: report.comments_count || 0
+  userName: report.users?.name || 'Пользователь'
 });
 
 // Routes
@@ -132,7 +81,8 @@ const formatReportResponse = (report) => ({
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'Eco Map API работает',
+    message: 'Eco Map API работает на Northflank! 🚀',
+    environment: process.env.NODE_ENV || 'development',
     timestamp: new Date().toISOString()
   });
 });
@@ -142,6 +92,7 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password, name } = req.body;
 
+    // Валидация
     if (!email || !password || !name) {
       return res.status(400).json({ error: 'Все поля обязательны' });
     }
@@ -154,16 +105,10 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Имя должно содержать минимум 2 символа' });
     }
 
-    // Проверка email
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: 'Введите корректный email' });
-    }
-
     const normalizedEmail = email.toLowerCase().trim();
 
     // Проверка существующего пользователя
-    const { data: existingUser, error: checkError } = await supabase
+    const { data: existingUser } = await supabase
       .from('users')
       .select('id')
       .eq('email', normalizedEmail)
@@ -174,8 +119,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     // Хеширование пароля
-    const saltRounds = 12;
-    const passwordHash = await bcrypt.hash(password, saltRounds);
+    const passwordHash = await bcrypt.hash(password, 12);
 
     // Создание пользователя
     const { data: user, error } = await supabase
@@ -274,29 +218,8 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Получение профиля
-app.get('/api/users/profile', authenticateToken, async (req, res) => {
-  try {
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', req.user.id)
-      .single();
-
-    if (error || !user) {
-      return res.status(404).json({ error: 'Пользователь не найден' });
-    }
-
-    res.json(formatUserResponse(user));
-
-  } catch (error) {
-    console.error('Profile error:', error);
-    res.status(500).json({ error: 'Ошибка при получении профиля' });
-  }
-});
-
 // Создание отчета
-app.post('/api/reports', authenticateToken, upload.single('image'), async (req, res) => {
+app.post('/api/reports', async (req, res) => {
   try {
     const {
       title,
@@ -305,11 +228,12 @@ app.post('/api/reports', authenticateToken, upload.single('image'), async (req, 
       urgency,
       address,
       latitude,
-      longitude
+      longitude,
+      userId
     } = req.body;
 
     // Валидация
-    if (!title || !type || !urgency || !address || !latitude || !longitude) {
+    if (!title || !type || !urgency || !address || !latitude || !longitude || !userId) {
       return res.status(400).json({ error: 'Все обязательные поля должны быть заполнены' });
     }
 
@@ -317,36 +241,11 @@ app.post('/api/reports', authenticateToken, upload.single('image'), async (req, 
       return res.status(400).json({ error: 'Заголовок должен содержать минимум 5 символов' });
     }
 
-    let imageUrl = null;
-
-    // Загрузка изображения
-    if (req.file) {
-      try {
-        const fileName = `reports/${req.user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`;
-        
-        const { data, error: uploadError } = await supabase.storage
-          .from('eco-map-images')
-          .upload(fileName, req.file.buffer, {
-            contentType: 'image/jpeg',
-            upsert: false
-          });
-
-        if (!uploadError) {
-          const { data: { publicUrl } } = supabase.storage
-            .from('eco-map-images')
-            .getPublicUrl(fileName);
-          imageUrl = publicUrl;
-        }
-      } catch (uploadError) {
-        console.error('Image upload error:', uploadError);
-      }
-    }
-
     // Создание отчета
     const { data: report, error } = await supabase
       .from('reports')
       .insert([{
-        user_id: req.user.id,
+        user_id: userId,
         title: title.trim(),
         description: description?.trim(),
         type,
@@ -354,10 +253,7 @@ app.post('/api/reports', authenticateToken, upload.single('image'), async (req, 
         address: address.trim(),
         latitude: parseFloat(latitude),
         longitude: parseFloat(longitude),
-        image_url: imageUrl,
-        status: 'active',
-        likes_count: 0,
-        comments_count: 0
+        status: 'active'
       }])
       .select(`
         *,
@@ -366,9 +262,6 @@ app.post('/api/reports', authenticateToken, upload.single('image'), async (req, 
       .single();
 
     if (error) throw error;
-
-    // Обновление статистики пользователя
-    await updateUserStats(req.user.id);
 
     res.status(201).json({
       success: true,
@@ -384,42 +277,22 @@ app.post('/api/reports', authenticateToken, upload.single('image'), async (req, 
 // Получение всех отчетов
 app.get('/api/reports', async (req, res) => {
   try {
-    const { page = 1, limit = 50, type, status, userId } = req.query;
-    const offset = (page - 1) * limit;
-
-    let query = supabase
+    const { data: reports, error } = await supabase
       .from('reports')
       .select(`
         *,
-        users:user_id (name, avatar_url),
-        report_likes!inner(count)
-      `, { count: 'exact' })
+        users:user_id (name)
+      `)
       .order('created_at', { ascending: false })
-      .range(offset, offset + parseInt(limit) - 1);
-
-    // Фильтры
-    if (type) query = query.eq('type', type);
-    if (status) query = query.eq('status', status);
-    if (userId) query = query.eq('user_id', userId);
-
-    const { data: reports, error, count } = await query;
+      .limit(100);
 
     if (error) throw error;
 
-    const formattedReports = reports.map(report => formatReportResponse({
-      ...report,
-      likes_count: report.report_likes[0]?.count || 0
-    }));
+    const formattedReports = reports.map(report => formatReportResponse(report));
 
     res.json({
       success: true,
-      reports: formattedReports,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: count,
-        totalPages: Math.ceil(count / limit)
-      }
+      reports: formattedReports
     });
 
   } catch (error) {
@@ -428,25 +301,20 @@ app.get('/api/reports', async (req, res) => {
   }
 });
 
-// Получение отчетов текущего пользователя
-app.get('/api/users/reports', authenticateToken, async (req, res) => {
+// Получение отчетов пользователя
+app.get('/api/users/:userId/reports', async (req, res) => {
   try {
+    const { userId } = req.params;
+
     const { data: reports, error } = await supabase
       .from('reports')
-      .select(`
-        *,
-        users:user_id (name),
-        report_likes!inner(count)
-      `)
-      .eq('user_id', req.user.id)
+      .select('*')
+      .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
 
-    const formattedReports = reports.map(report => formatReportResponse({
-      ...report,
-      likes_count: report.report_likes[0]?.count || 0
-    }));
+    const formattedReports = reports.map(report => formatReportResponse(report));
 
     res.json({
       success: true,
@@ -455,111 +323,39 @@ app.get('/api/users/reports', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('Get user reports error:', error);
-    res.status(500).json({ error: 'Ошибка при получении отчетов' });
+    res.status(500).json({ error: 'Ошибка при получении отчетов пользователя' });
   }
 });
 
-// Лайк отчета
-app.post('/api/reports/:id/like', authenticateToken, async (req, res) => {
+// Получение статистики
+app.get('/api/stats', async (req, res) => {
   try {
-    const reportId = req.params.id;
-
-    // Проверка существования отчета
-    const { data: report, error: reportError } = await supabase
+    // Количество отчетов
+    const { count: totalReports, error: reportsError } = await supabase
       .from('reports')
-      .select('id')
-      .eq('id', reportId)
-      .single();
+      .select('*', { count: 'exact', head: true });
 
-    if (reportError || !report) {
-      return res.status(404).json({ error: 'Отчет не найден' });
-    }
+    // Количество пользователей
+    const { count: totalUsers, error: usersError } = await supabase
+      .from('users')
+      .select('*', { count: 'exact', head: true });
 
-    // Проверка существования лайка
-    const { data: existingLike } = await supabase
-      .from('report_likes')
-      .select('id')
-      .eq('user_id', req.user.id)
-      .eq('report_id', reportId)
-      .single();
-
-    let result;
-    if (existingLike) {
-      // Удаление лайка
-      result = await supabase
-        .from('report_likes')
-        .delete()
-        .eq('id', existingLike.id);
-    } else {
-      // Добавление лайка
-      result = await supabase
-        .from('report_likes')
-        .insert([{
-          user_id: req.user.id,
-          report_id: reportId
-        }]);
-    }
-
-    if (result.error) throw result.error;
-
-    // Получение обновленного количества лайков
-    const { data: likes, error: likesError } = await supabase
-      .from('report_likes')
-      .select('id', { count: 'exact' })
-      .eq('report_id', reportId);
-
-    if (likesError) throw likesError;
+    if (reportsError || usersError) throw reportsError || usersError;
 
     res.json({
       success: true,
-      likesCount: likes.length,
-      liked: !existingLike
+      stats: {
+        totalReports,
+        totalUsers,
+        lastUpdated: new Date().toISOString()
+      }
     });
 
   } catch (error) {
-    console.error('Like error:', error);
-    res.status(500).json({ error: 'Ошибка при обработке лайка' });
+    console.error('Stats error:', error);
+    res.status(500).json({ error: 'Ошибка при получении статистики' });
   }
 });
-
-// Вспомогательная функция для обновления статистики пользователя
-async function updateUserStats(userId) {
-  try {
-    const { data: reports, error: reportsError } = await supabase
-      .from('reports')
-      .select('id', { count: 'exact' })
-      .eq('user_id', userId);
-
-    if (reportsError) throw reportsError;
-
-    const reportsCount = reports.length;
-    const points = reportsCount * 50;
-    const level = Math.floor(points / 200) + 1;
-
-    // Достижения
-    const achievements = ['Новичок'];
-    if (reportsCount >= 1) achievements.push('Первый отчет');
-    if (reportsCount >= 5) achievements.push('Активный участник');
-    if (reportsCount >= 10) achievements.push('Эко-герой');
-
-    // Обновление пользователя
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({
-        reports_count: reportsCount,
-        points: points,
-        level: level,
-        achievements: achievements,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', userId);
-
-    if (updateError) throw updateError;
-
-  } catch (error) {
-    console.error('Update user stats error:', error);
-  }
-}
 
 // Обработка ошибок
 app.use((error, req, res, next) => {
@@ -575,9 +371,9 @@ app.use('*', (req, res) => {
   res.status(404).json({ error: 'Маршрут не найден' });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Сервер запущен на порту ${PORT}`);
-  console.log(`📊 Supabase URL: ${process.env.SUPABASE_URL ? 'Настроен' : 'Не настроен'}`);
-  console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🚀 Eco Map Server запущен на порту ${PORT}`);
+  console.log(`📍 Northflank Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 Health check: http://0.0.0.0:${PORT}/api/health`);
 });
